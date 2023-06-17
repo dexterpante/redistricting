@@ -1,0 +1,286 @@
+---
+title: "Redistricting Algorithm"
+author: "Dexter N. Pante"
+date: "2023-06-08"
+output:
+  word_document: default
+  html_document: default
+---
+```{r setup, eval=TRUE}
+knitr::opts_chunk$set(eval = TRUE, include=TRUE)
+```
+
+
+## Introduction
+
+This document will illustrate several methods on clustering of schools. We will use 3 approaches, namely:
+
+1.  kmeans clustering
+
+2.  density-based clustering
+
+3.  criterion-based clustering
+
+Our case study is the SDO of Pasig.
+
+```{r echo=FALSE, message = FALSE, warning=FALSE}
+#install and update packages first
+#leaflet,  dplyr, fpc, factoextra, tidyverse, htmltools
+#if(!require(devtools)) install.packages("devtools")
+#devtools::install_github("kassambara/factoextra")
+
+library(tidyverse)
+#import data
+url <- "https://raw.githubusercontent.com/dexterpante/sha/main/hardship_vars.csv"
+hardship_vars <- read.csv(url)
+coord <- "https://raw.githubusercontent.com/dexterpante/redistricting/main/school_coordinates.csv"
+masterdb <- read.csv(coord) 
+```
+
+
+```{r echo=FALSE}
+#we have to do some data cleaning and merging
+minidb <-  inner_join(masterdb, hardship_vars, by = join_by("School_ID")) %>%
+  select(Division, School_ID, School_name, Latitude, Longitude) %>%
+  filter(Division == "Pasig City") %>% na.omit() %>% unique() %>% select(Longitude, Latitude)
+head(minidb)
+
+```
+Our dataset contains the Longitude and Latitude of all schools in Pasig City. There are `r nrow(minidb)` schools in our data but only shown above are 6 schools for illustration purposes only.
+
+## Determining the Optimal Number of Clusters
+
+An important consideration when doing cluster analysis is the number of clusters to be used given a set of observations (in this case schools).
+
+For Kmeans clustering, the number of clusters have to be specified in the algorithm. Fortunately, there is also a method on determining the number of cluster using Elbow Method. By "eye-balling", the part of the elbow where there is a joint, that's the suggested number of clusters. In the example, it's 3 clusters.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+library(factoextra)
+elbow <- fviz_nbclust(minidb, kmeans, method = "wss") +
+  labs(subtitle = "Elbow method")
+elbow
+#elbow + geom_vline(xintercept = 3, linetype = 2)
+```
+
+## KMEANS Clustering
+
+Given that we have identified the optimal number of clusters, we can now use Kmeans clustering to group the observations according to their clusters.
+
+```{r}
+#set.seed to ensure replicability
+set.seed(100)
+k <- kmeans(minidb, centers = 3)
+fviz_cluster(k, minidb,
+             palette = "Set2", ggtheme = theme_minimal())
+```
+
+Kmeans algorithm produced an output where each observation has been provided with their respective clusters. This data can be seen from the data below.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+minidb$cluster <- k$cluster
+head(minidb)
+```
+## Data Mapping
+
+To check how good the clustering, it is important to visualize the data. The next step is to plot the data in a map together with cluster of each school.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(ggmap)
+api_secret <- 'AIzaSyDe50NNwQ44zhdofYNuVdevPaymp1uHh60'
+
+register_google(key = api_secret)
+pasig <- get_map("Pasig City, Philippines", maptype='roadmap', source="google", api_key = api_secret, zoom=13)
+ggmap(pasig)
+ggmap(pasig) + 
+  geom_point(data = minidb, aes(x=Longitude, y=Latitude), color = minidb$cluster, size = 2.5)
+
+```
+
+It looks like the schools were clustered into North, West and East with some schools close to the borders of the other clusters.  These schools that are close to the borders are clearly outliers. The Kmeans clustering forces schools to have their own clusters.
+
+What if we want to calibrate the cluster of those that are outliers? How do we identify them in the first place?
+
+## DBSCAN Clustering
+The second clustering method that we will use is the DBSCAN Algorithm. DBSCAN means Density-based Spatial Clustering of Applications with Noise.  This approach is useful because it can identify the noise or outlier in our data.
+
+The DBSCAN approach requires us to specify the radius (epsilon) of the cluster and the minimum number of observation for the cluster. Unlike Kmeans, DBSCAN can identify the number of clusters given these 2 parameters.
+
+First, we identify the radius of the cluster using the same "elbow-method".
+
+```{r warning=FALSE, message=FALSE}
+library(factoextra)
+library(dbscan)
+kNNdistplot(minidb, k = 4)
+abline(h=.015, title(main="Radius for DBSCAN Clustering"))
+```
+
+Now, we can perform the DBSCAN and we specify the radius as .015 and 3 as the minimum observations (schools) in a cluster.
+```{r}
+set.seed(100)
+db <- dbscan(minidb, eps = .0150, minPts = 3)
+fviz_cluster(db, minidb,
+             palette = "Set2", ggtheme = theme_minimal())
+db
+```
+```{r include=FALSE}
+library(tidyverse)
+outlier <-  inner_join(masterdb, hardship_vars, by = join_by("School_ID")) %>%
+  select(Division, School_ID, School_name, Latitude, Longitude) %>%
+  filter(Division == "Pasig City") %>% na.omit() %>% unique() %>% mutate(Cluster = db$cluster) %>% filter(Cluster==0) %>% select(School_name)
+
+```
+The DBSCAN method was able to cluster all schools except `r outlier` which is the only outlier.  If we want, we can recalibrate the cluster of `r outlier` using local knowledge.
+
+## CRITERION-based clustering
+This approach is basically driven by parameters set by management.  It involves knowing the criteria for organizing schools.  These criteria aims to group schools together for ease of deploying human resources for schools.  
+
+The actual deployment problem goes like this:
+
+Given 1,500 PDO 1 items, what if we want to cluster schools based on several criteria? 
+
+For example, we wanted to deploy the PDO 1 in a cluster of schools (composed of 1 Central School and at most 2 neighboring schools) that are closest to each other and each school having an AO II.
+
+In this approach, we have to perform the following steps using the school data:
+
+
+1.  Filter schools with AO II
+2.  Filter Central Schools
+3.  For each Central School, compute the distance to the next school.
+4.  Filter the 2 schools with lowest distance from the Central School.
+
+Crucial in this approach is distance formula.  In this sample, we will use 2 approaches of computing for distances.
+
+The first formula is the Haversine method which determines the great-circle distance between two points on a sphere given their longitudes and latitudes.  
+
+But we have to perform data cleaning and merging.
+
+```{r include=FALSE}
+#data cleaning
+library(geosphere)
+pdourl <- "https://raw.githubusercontent.com/dexterpante/redistricting/main/pdomaster.csv"
+pdodat <- read.csv(pdourl)
+
+dbrefschl <- pdodat %>% select (Ref_SchoolID, RefSchool_LAT, RefSchool_LONG)
+colnames(dbrefschl) <- c("MainID", "Main_LAT", "Main_LONG")
+
+dbnnschl <- pdodat %>% select (School2_ID, School3_ID, School2_LAT, School2_LONG, School3_LAT, School.3_LONG)
+
+schl2 <- dbnnschl%>% select (School2_ID, School2_LAT, School2_LONG)
+colnames (schl2) <- c("NNID", "NNLAT", "NNLONG")
+
+schl3 <- dbnnschl%>% select (School3_ID, School3_LAT, School.3_LONG)
+colnames (schl3) <- c("NNID", "NNLAT", "NNLONG")
+
+dbnnschl <- rbind(schl2,schl3)
+
+temp_main <- dbrefschl %>% select(MainID, Main_LONG, Main_LAT) %>% distinct() %>%
+  column_to_rownames(var = "MainID")
+
+temp_mynn <- dbnnschl %>% select(NNID, NNLONG, NNLAT) %>% distinct() %>%
+  column_to_rownames(var = "NNID")
+
+```
+To compute for school-by-school distance, it requires to have data for Central School and Nearby Schools.  After some data cleaning, we now have these two datasets.  
+
+Central School Data:
+```{r}
+head(temp_main)
+```
+
+Nearby Schools Data:
+```{r}
+head(temp_mynn)
+```
+Take note that for both tables, the row name is the same as the School ID.  
+
+We can now compute for Haversine distance using a function from geosphere package in R.  The output produces a table where the first column is the Central School ID, the second column is the Nearby School ID, and the third column is the Haversine Distance (measured in meters) of the two columns. 
+
+In this table, we have already selected 2 nearby schools closest to the Central School.
+
+```{r echo=FALSE}
+#main function
+output <- distm(temp_main, temp_mynn, fun=distHaversine) %>%
+  as.data.frame() %>% mutate(ID=dbrefschl$MainID, .before="V1") 
+
+nnlist <- temp_mynn %>% rownames_to_column(var="NNID") %>% select (NNID) %>%
+  add_row(NNID="SchlID", .before = 1)
+
+colnames(output) <- nnlist$NNID
+
+#table needed for distance mapping with Google
+output2 <- output %>% pivot_longer(2:3001, names_to = "SchoolNN", values_to = "Distance") 
+
+myoutput <- output2 %>% group_by(SchlID) %>% slice_min(order_by = Distance, n=2)
+myoutput
+```
+
+```{r include = FALSE}
+#validation with Topher data
+pivot <- pdodat %>% select(Ref_SchoolID, School2_ID, School3_ID, RefSch.ot_Sch2, RefSch.ot_Sch3) %>% 
+    pivot_longer(2:3, names_to = c("schl", "id"),
+                 names_sep = "_", values_to = "ID") %>% 
+    pivot_longer(starts_with("RefS"), values_to = "DIST") %>% 
+    select(1,4,6)
+
+colnames(myoutput) <- c("Ref", "NN", "Dist") 
+colnames(pivot) <- c("Ref", "NN", "Distance") 
+
+seq1 <- seq(1,5999, by=4)
+seq2 <- seq(4,6000, by=4)
+
+allvec <- c(seq1, seq2)
+#sort(allvec)
+
+pivot <-pivot[allvec,]
+
+jointab <- inner_join(myoutput, pivot, by = "Ref" ) %>%
+  mutate(Dist = Dist/1000, DD = Dist - Distance) %>% 
+  mutate(DD = round(DD, 2)) %>% rename(NNDX=NN.x, NNTOP=NN.y)
+
+head(jointab)
+fin <- jointab[allvec,]
+View(fin)
+
+fin2 <- fin %>% filter(NNDX==NNTOP)
+write.csv(fin2, "finpdo.csv")
+```
+
+The second formula for computing distance is road distance used by Google.  The Haversine formula measures the shortest distance between two points in a spherical surface. But for road distance in Google Maps, it takes into account the road network and mode of transportation.  In a sense, road distance is more precise.  However, there is a cost for using Google Maps services.  
+
+For purposes of illustrating how to compute school-by-school distance using Google Services, we secured a Google API which allows limited queries per day.  
+
+We will be using a function from gmapsdistance package to compute for road distance.  
+
+We randomly selected 5 Central Schools and 5 Nearby Schools and computed for their distances. The output table has 3 columns: Central School, Nearby School and Distance.  The first two columns contain the geospatial data while the third contains the distance data.  
+
+```{r include=FALSE}
+library(gmapsdistance)
+dbrefschl <- dbrefschl %>% rename(SchlID = MainID)
+dbnnschl <- dbnnschl %>% rename(SchoolNN = NNID)
+
+jointab2 <- inner_join(output2, dbrefschl, by = "SchlID") %>% mutate_at (c(2), as.numeric) %>% inner_join(., dbnnschl, by = "SchoolNN")
+
+set.seed(100)
+mysample <- sample_n(jointab2, 50, replace = TRUE)
+start_loc <- paste(mysample$Main_LAT, mysample$Main_LONG, sep = ",")
+end_loc <- paste(mysample$NNLAT, mysample$NNLONG, sep = ",")
+
+start_loc
+end_loc
+
+```
+
+```{r echo=FALSE}
+library(tidyverse)
+
+dist <- gmapsdistance(origin = start_loc[1:25], destination = end_loc[1:25], key = api_secret, mode = "driving")
+
+road_dist <- data.frame(matrix(ncol = 3, nrow = 25))
+
+colnames (road_dist) <- c("Central_School","Nearby_School","Distance")
+
+road_dist <-  road_dist %>% mutate(Central_School= start_loc[1:25], Nearby_School = end_loc[1:25], Distance = dist$Distance[1:25]/1000) 
+
+road_dist
+```
+Note that only the first observation is precise when compared to Google Map Online because other observations involve maritime travel.
