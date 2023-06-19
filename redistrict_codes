@@ -86,7 +86,7 @@ To check how good the clustering, it is important to visualize the data. The nex
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
 library(ggmap)
-api_secret <- 'AIzaSyDe50NNwQ44zhdofYNuVdevPaymp1uHh60'
+api_secret <- 
 
 register_google(key = api_secret)
 pasig <- get_map("Pasig City, Philippines", maptype='roadmap', source="google", api_key = api_secret, zoom=13)
